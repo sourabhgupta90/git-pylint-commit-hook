@@ -32,11 +32,11 @@ def _current_commit():
         return 'HEAD'
 
 
-def _get_list_of_committed_files():
+def _get_list_of_committed_python_files():
     """ Returns a list of files about to be commited. """
     files = []
     # pylint: disable=E1103
-    diff_index_cmd = 'git diff-index --cached %s' % _current_commit()
+    diff_index_cmd = 'git diff-index %s' % _current_commit()
     output = subprocess.check_output(
         diff_index_cmd.split()
     )
@@ -44,10 +44,20 @@ def _get_list_of_committed_files():
         if result != '':
             result = result.split()
             if result[4] in ['A', 'M']:
-                files.append(result[5])
+                if _is_python_file(result[5]):
+                    files.append((result[5],None)) #None is initial score
 
     return files
 
+def _get_user():
+    """
+    Returns user
+    """
+    get_user_cmd = "git var GIT_AUTHOR_IDENT "
+    user = subprocess.check_output(
+        get_user_cmd.split()
+    )
+    return user.split()[0]
 
 def _is_python_file(filename):
     """Check if the input file looks like a Python script
@@ -80,10 +90,141 @@ def _parse_score(pylint_output):
             return float(match.group(1))
     return 0.0
 
+def _is_empty_init_file(python_file):
+    """
+    Checking empty init file
+    """
+    if os.path.basename(python_file) == '__init__.py':
+        if os.stat(python_file).st_size == 0:
+            return True
+    return False
+
+def _get_git_previous_commit():
+    """
+    Getting last commit SHA
+    """
+    diff_index_cmd = 'git log -n 1 --pretty=format:%h'
+    output = subprocess.check_output(
+        diff_index_cmd.split()
+    )
+    return output
+
+def _get_previous_commit_file_data(git_file):
+    try:
+        diff_index_cmd = 'git show HEAD~1:%s' % (git_file)
+        output = subprocess.check_output(
+            diff_index_cmd.split()
+        )
+    except Exception as e:
+        output = ""
+    return output    
+
+def _run_subprocess(process_command):
+    try:
+        diff_index_cmd = process_command
+        output = subprocess.check_output(
+            diff_index_cmd.split()
+        )
+    except Exception as e:
+        output = ""
+    return output
+
+
+_GIT_PYLINT_MINIMUM_SCORE = 4
+
+def _get_prev_score(pylint, python_files):
+    total_score = 0
+    checked_pylint_files = 0
+    avg_score = 0
+    for python_file, score in python_files:
+        if _is_empty_init_file(python_file):
+            continue
+        git_previous_commit_file_name = 'pylint_' + python_file.split("/")[-1]
+        git_previous_commit_file = "/".join(python_file.split('/')[:-1] + [git_previous_commit_file_name])
+        f = open(git_previous_commit_file, 'w')
+        f.write(_get_previous_commit_file_data(python_file))
+        f.close()
+        out, _ = _run_pylint(pylint, git_previous_commit_file)
+        os.remove(git_previous_commit_file)
+        if _parse_score(out):
+            score = _parse_score(out)
+            total_score += score
+            checked_pylint_files +=1
+    if checked_pylint_files:
+        avg_score = total_score/checked_pylint_files
+    if  avg_score == 0:
+        avg_score = _GIT_PYLINT_MINIMUM_SCORE
+    return avg_score
+
+def _run_pylint(pylint, python_file, suppress_report =False ):
+    try:
+        command = [pylint]
+
+        penv = os.environ.copy()
+        penv["LANG"]="it_IT.UTF-8"
+        penv["LC_CTYPE"]="it_IT.UTF-8"
+        penv["LC_COLLATE"]="it_IT.UTF-8"
+
+        """
+        if pylint_params:
+            command += pylint_params.split()
+            if '--rcfile' not in pylint_params:
+                command.append('--rcfile={}'.format(pylintrc))
+        else:
+            command.append('--rcfile={}'.format(pylintrc))
+        """
+
+        command.append(python_file)
+
+        if suppress_report:
+            command.append('--reports=n')
+        proc = subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=penv)
+        out, _value = proc.communicate()
+    except OSError:
+            print("\nAn error occurred. Is pylint installed?")
+            sys.exit(1)
+    return out, _value
+
+# def _process_git_log_data(git_log_data):
+#     """
+#     parse and process git log data 
+#     """
+#     process_data = []
+#     for git_log in git_log_data.split("\n"):
+#         commit_info = {}
+#         git_log_info_list = git_log.split("|")
+#         commit_match = re.match(r'[a-zA-Z0-9_]*',git_log_info_list[0])
+#         if commit_match:
+#             commit_sha = commit_match.group(0)
+#             file_changed = 'git log  --name-only --pretty=format:"%f" %s..%s' % (commit_sha)
+#             file_changed_info = _run_subprocess(file_changed)
+#             file_changed_list = file_changed_info.split("\n")
+
+# def _repo_score():
+#     """
+#     Calculate git repo score.
+#     """
+#     gitlogs = 'git log -n 4 --pretty=format:"%H|%an|%ar|%s"'
+#     git_log_output = _run_subprocess(gitlogs)
+
+#     process_git_log_data = _process_git_log(git_log_data):
+#     for git_log in git_log_output.split("\n"):
+#         git_log_info_list = git_log.split("|")
+#         commit_match = re.match(r'[a-zA-Z0-9_]*',git_log_info_list[0])
+#         if commit_match:
+#             commit_sha = commit_match.group(0)
+#             file_changed = 'git log  --name-only --pretty=format:"%f" %s..%s' % (commit_sha)
+#             file_changed_info = _run_subprocess(file_changed)
+#             file_changed_list = file_changed_info.split("\n")
+
 
 def check_repo(
         limit, pylint='pylint', pylintrc='.pylintrc', pylint_params=None,
-        suppress_report=False):
+        suppress_report=False, datfile="/tmp/git.dat", scorefile="/tmp/scores.dat"):
     """ Main function doing the checks
 
     :type limit: float
@@ -98,19 +239,12 @@ def check_repo(
     :param suppress_report: Suppress report if score is below limit
     """
     # List of checked files and their results
-    python_files = []
+    python_files = _get_list_of_committed_python_files()
 
     # Set the exit code
     all_filed_passed = True
 
-    # Find Python files
-    for filename in _get_list_of_committed_files():
-        try:
-            if _is_python_file(filename):
-                python_files.append((filename, None))
-        except IOError:
-            print 'File not found (probably deleted): {}\t\tSKIPPED'.format(
-                filename)
+    total_score = 0.0
 
     # Don't do anything if there are no Python files
     if len(python_files) == 0:
@@ -129,66 +263,83 @@ def check_repo(
 
     # Pylint Python files
     i = 1
+    n_files = len(python_files)
     for python_file, score in python_files:
         # Allow __init__.py files to be completely empty
-        if os.path.basename(python_file) == '__init__.py':
-            if os.stat(python_file).st_size == 0:
-                print(
-                    'Skipping pylint on {} (empty __init__.py)..'
-                    '\tSKIPPED'.format(python_file))
-
-                # Bump parsed files
-                i += 1
-                continue
+        if _is_empty_init_file(python_file):
+            print(
+                'Skipping pylint on {} (empty __init__.py)..'
+                '\tSKIPPED'.format(python_file))
+            # Bump parsed files
+            i += 1
+            continue
 
         # Start pylinting
         sys.stdout.write("Running pylint on {} (file {}/{})..\t".format(
-            python_file, i, len(python_files)))
+            python_file, i, n_files ))
         sys.stdout.flush()
-        try:
-            command = [pylint]
-
-            if pylint_params:
-                command += pylint_params.split()
-                if '--rcfile' not in pylint_params:
-                    command.append('--rcfile={}'.format(pylintrc))
-            else:
-                command.append('--rcfile={}'.format(pylintrc))
-
-
-            command.append(python_file)
-
-            proc = subprocess.Popen(
-                command,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE)
-            out, _ = proc.communicate()
-        except OSError:
-            print("\nAn error occurred. Is pylint installed?")
-            sys.exit(1)
+        out, _ = _run_pylint(pylint, python_file)
 
         # Verify the score
         score = _parse_score(out)
-        if score >= float(limit):
+        file_prev_score = _get_prev_score(pylint, [(python_file,score)])
+        if file_prev_score and score >= file_prev_score:
+            status = 'PASSED'
+        elif score >= float(limit):
             status = 'PASSED'
         else:
             status = 'FAILED'
             all_filed_passed = False
 
+        total_score += score
+
         # Add some output
         print('{:.2}/10.00\t{}'.format(decimal.Decimal(score), status))
         if 'FAILED' in status:
-            if suppress_report:
-                command.append('--reports=n')
-                proc = subprocess.Popen(
-                    command,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE)
-                out, _ = proc.communicate()
+            out, _ = _run_pylint(pylint,python_file, suppress_report=True)
             print out
-
 
         # Bump parsed files
         i += 1
+
+    user =  _get_user()
+
+    score_fd = open(scorefile, "r+")
+    prev_score = _get_prev_score(pylint, python_files)
+
+
+    if 'FAILED' in status:
+        new_score = total_score
+        """
+        print "IN FAILED @@", prev_score
+        new_score =  (total_score + prev_score) / (n_files + 1)
+        score_fd.seek(0)
+        score_fd.write("%s" % str(new_score))
+        """
+    else:
+        new_score =  (total_score + prev_score) / (n_files + 1)
+        score_fd.seek(0)
+        score_fd.write("%s" % str(new_score))
+
+
+    impact = new_score - prev_score
+    total_score = total_score / n_files
+
+
+    score_fd.close()
+
+    with open(datfile, "a+") as f:
+        f.write('{:40s} COMMIT SCORE {:5.2f} IMPACT ON REPO {:5.2f}  AGAINST {} STATUS {} \n'.format(user, total_score, impact, _current_commit(), status))
+        """
+        f.seek(-56*2, os.SEEK_END)
+        x = f.readlines()
+        prev_score = float(x[0].split()[1])
+        """
+
+    print "\n\n"
+    print "Total score ", str(total_score)
+    print "Your score made an impact of ", str(impact)
+    print "\n\n"
+
 
     return all_filed_passed
