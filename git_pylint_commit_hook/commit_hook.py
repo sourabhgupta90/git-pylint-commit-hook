@@ -6,7 +6,7 @@ import sys
 import subprocess
 import collections
 import ConfigParser
-
+import json
 
 ExecutionResult = collections.namedtuple(
     'ExecutionResult',
@@ -109,9 +109,12 @@ def _get_git_previous_commit():
     )
     return output
 
-def _get_previous_commit_file_data(git_file):
+def _get_commit_file_data(git_file, commit_sha='HEAD~1'):
+    """
+    get previous commit git file data
+    """
     try:
-        diff_index_cmd = 'git show HEAD~1:%s' % (git_file)
+        diff_index_cmd = 'git show %s:%s' % (commit_sha,git_file)
         output = subprocess.check_output(
             diff_index_cmd.split()
         )
@@ -120,6 +123,9 @@ def _get_previous_commit_file_data(git_file):
     return output    
 
 def _run_subprocess(process_command):
+    """
+     run subprocess in python
+    """
     try:
         diff_index_cmd = process_command
         output = subprocess.check_output(
@@ -132,20 +138,20 @@ def _run_subprocess(process_command):
 
 _GIT_PYLINT_MINIMUM_SCORE = 4
 
-def _get_prev_score(pylint, python_files):
+def _get_prev_score(pylint, python_files, commit_sha='HEAD~1'):
     total_score = 0
     checked_pylint_files = 0
     avg_score = 0
     for python_file, score in python_files:
         if _is_empty_init_file(python_file):
             continue
-        git_previous_commit_file_name = 'pylint_' + python_file.split("/")[-1]
-        git_previous_commit_file = "/".join(python_file.split('/')[:-1] + [git_previous_commit_file_name])
-        f = open(git_previous_commit_file, 'w')
-        f.write(_get_previous_commit_file_data(python_file))
+        git_commit_file_name = 'pylint_' + python_file.split("/")[-1]
+        git_commit_file = "/".join(python_file.split('/')[:-1] + [git_commit_file_name])
+        f = open(git_commit_file, 'w')
+        f.write(_get_commit_file_data(python_file, commit_sha))
         f.close()
-        out, _ = _run_pylint(pylint, git_previous_commit_file)
-        os.remove(git_previous_commit_file)
+        out, _ = _run_pylint(pylint, git_commit_file)
+        os.remove(git_commit_file)
         if _parse_score(out):
             score = _parse_score(out)
             total_score += score
@@ -189,38 +195,38 @@ def _run_pylint(pylint, python_file, suppress_report =False ):
             sys.exit(1)
     return out, _value
 
-# def _process_git_log_data(git_log_data):
-#     """
-#     parse and process git log data 
-#     """
-#     process_data = []
-#     for git_log in git_log_data.split("\n"):
-#         commit_info = {}
-#         git_log_info_list = git_log.split("|")
-#         commit_match = re.match(r'[a-zA-Z0-9_]*',git_log_info_list[0])
-#         if commit_match:
-#             commit_sha = commit_match.group(0)
-#             file_changed = 'git log  --name-only --pretty=format:"%f" %s..%s' % (commit_sha)
-#             file_changed_info = _run_subprocess(file_changed)
-#             file_changed_list = file_changed_info.split("\n")
+def _process_git_log_data(git_log_data):
+    """
+    parse and process git log data 
+    """
+    git_log_commit = []
+    for each_commit in git_log_data.split("\n"):
+        git_log_commit.append(json.loads(each_commit))
+    return git_log_commit
 
-# def _repo_score():
-#     """
-#     Calculate git repo score.
-#     """
-#     gitlogs = 'git log -n 4 --pretty=format:"%H|%an|%ar|%s"'
-#     git_log_output = _run_subprocess(gitlogs)
 
-#     process_git_log_data = _process_git_log(git_log_data):
-#     for git_log in git_log_output.split("\n"):
-#         git_log_info_list = git_log.split("|")
-#         commit_match = re.match(r'[a-zA-Z0-9_]*',git_log_info_list[0])
-#         if commit_match:
-#             commit_sha = commit_match.group(0)
-#             file_changed = 'git log  --name-only --pretty=format:"%f" %s..%s' % (commit_sha)
-#             file_changed_info = _run_subprocess(file_changed)
-#             file_changed_list = file_changed_info.split("\n")
+def _repo_score():
+    """
+    Calculate git repo score.
+    """
+    gitlogs = 'git log -n 4 --pretty=format:{"commit":"%H","user":"%an"}'
+    git_log_output = _run_subprocess(gitlogs)
 
+    process_git_log_data = _process_git_log_data(git_log_output)
+    list_of_commit_score =[]  
+    for i in xrange(0,len(process_git_log_data)-1):
+        commit_score = 0
+        commit = process_git_log_data[i]["commit"]
+        prev_commit = process_git_log_data[i+1]["commit"]
+        file_changed =  'git log  --name-only --pretty=format:%f {0}..{1}'.format(prev_commit,commit)
+        file_changed_info = _run_subprocess(file_changed)
+        file_changed_list = file_changed_info.split("\n")[1:]
+        for changed_file in file_changed_list:
+            file_score = _get_prev_score('pylint', [(changed_file,None)], commit)
+            prev_file_score = _get_prev_score('pylint', [(changed_file,None)], prev_commit)
+            commit_score += (file_score-prev_file_score)
+        list_of_commit_score.append({process_git_log_data[i]["commit"]: commit_score})
+    print list_of_commit_score
 
 def check_repo(
         limit, pylint='pylint', pylintrc='.pylintrc', pylint_params=None,
